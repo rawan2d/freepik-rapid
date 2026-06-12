@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # RapidAPI Key from environment
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "").strip()
 
 # Models
 class DownloadRequest(BaseModel):
@@ -28,14 +28,21 @@ class DownloadResponse(BaseModel):
     download_url: Optional[str] = None
 
 # Middleware: Verify API Key
-def verify_api_key(x_rapidapi_key: str = Header(None)):
+def verify_api_key(
+    x_rapidapi_key: Optional[str] = Header(default=None, alias="X-RapidAPI-Key")
+):
     """Verify RapidAPI key"""
+    logger.info(f"Received API key header: {'YES' if x_rapidapi_key else 'NO'}")
+
     if not x_rapidapi_key:
         raise HTTPException(status_code=401, detail="Missing API key")
-    
-    if x_rapidapi_key != RAPIDAPI_KEY:
+
+    if not RAPIDAPI_KEY:
+        raise HTTPException(status_code=500, detail="Server API key is not configured")
+
+    if x_rapidapi_key.strip() != RAPIDAPI_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    
+
     return x_rapidapi_key
 
 # ============================================
@@ -53,47 +60,42 @@ async def root():
     }
 
 @app.get("/api")
-async def api_download(url: str, api_key: str = Header(None, alias="X-RapidAPI-Key")):
+async def api_download(
+    url: str,
+    api_key: Optional[str] = Header(default=None, alias="X-RapidAPI-Key")
+):
     """
     Download file from Freepik/Magnific - Query parameter version
-    
-    Usage: GET /api?url=https://www.freepik.com/...
-    
-    Parameters:
-    - url: Direct link to Freepik/Magnific file (query parameter)
-    - X-RapidAPI-Key: Your API key (header)
-    
-    Returns:
-    - download_url: Direct download link
-    - status: success or error
     """
-    
     logger.info(f"API download request: {url}")
-    
+
     if not api_key:
-        raise HTTPException(status_code=401, detail="Missing X-RapidAPI-Key header")
-    
-    if api_key != RAPIDAPI_KEY:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    if not RAPIDAPI_KEY:
+        raise HTTPException(status_code=500, detail="Server API key is not configured")
+
+    if api_key.strip() != RAPIDAPI_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    
+
     try:
         from main import handle_freepik_download
-        
+
         download_url = handle_freepik_download(url)
-        
+
         if not download_url:
             return {
                 "status": "error",
                 "message": "❌ Failed to get download URL",
                 "download_url": None
             }
-        
+
         return {
             "status": "success",
             "message": "✅ Download link generated successfully",
             "download_url": download_url
         }
-    
+
     except Exception as e:
         logger.exception(f"API download error: {str(e)}")
         return {
@@ -109,37 +111,27 @@ async def download_freepik(
 ):
     """
     Download a file from Freepik/Magnific - JSON Body version
-    
-    Usage: POST /download with JSON body
-    
-    Parameters:
-    - url: Direct link to Freepik/Magnific file
-    
-    Returns:
-    - download_url: Direct download link
-    - status: success or error
     """
-    
     logger.info(f"Download request: {request.url}")
-    
+
     try:
         from main import handle_freepik_download
-        
+
         download_url = handle_freepik_download(request.url)
-        
+
         if not download_url:
             return {
                 "status": "error",
                 "message": "❌ Failed to get download URL",
                 "download_url": None
             }
-        
+
         return {
             "status": "success",
             "message": "✅ Download link generated successfully",
             "download_url": download_url
         }
-    
+
     except Exception as e:
         logger.exception(f"Download error: {str(e)}")
         return {
@@ -154,19 +146,6 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-
-# ============================================
-# Error Handler
-# ============================================
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    logger.exception("Unhandled exception")
-    return {
-        "status": "error",
-        "message": "Internal server error",
-        "detail": str(exc)
     }
 
 if __name__ == "__main__":
