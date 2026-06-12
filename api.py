@@ -52,13 +52,65 @@ async def root():
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
+@app.get("/api")
+async def api_download(url: str, api_key: str = Header(None, alias="X-RapidAPI-Key")):
+    """
+    Download file from Freepik/Magnific - Query parameter version
+    
+    Usage: GET /api?url=https://www.freepik.com/...
+    
+    Parameters:
+    - url: Direct link to Freepik/Magnific file (query parameter)
+    - X-RapidAPI-Key: Your API key (header)
+    
+    Returns:
+    - download_url: Direct download link
+    - status: success or error
+    """
+    
+    logger.info(f"API download request: {url}")
+    
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing X-RapidAPI-Key header")
+    
+    if api_key != RAPIDAPI_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    try:
+        from main import handle_freepik_download
+        
+        download_url = handle_freepik_download(url)
+        
+        if not download_url:
+            return {
+                "status": "error",
+                "message": "❌ Failed to get download URL",
+                "download_url": None
+            }
+        
+        return {
+            "status": "success",
+            "message": "✅ Download link generated successfully",
+            "download_url": download_url
+        }
+    
+    except Exception as e:
+        logger.exception(f"API download error: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"❌ Download failed: {str(e)}",
+            "download_url": None
+        }
+
 @app.post("/download")
 async def download_freepik(
     request: DownloadRequest,
     api_key: str = Depends(verify_api_key)
 ):
     """
-    Download a file from Freepik/Magnific
+    Download a file from Freepik/Magnific - JSON Body version
+    
+    Usage: POST /download with JSON body
     
     Parameters:
     - url: Direct link to Freepik/Magnific file
@@ -71,7 +123,6 @@ async def download_freepik(
     logger.info(f"Download request: {request.url}")
     
     try:
-        # Import and call the main download handler
         from main import handle_freepik_download
         
         download_url = handle_freepik_download(request.url)
