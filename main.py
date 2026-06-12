@@ -315,16 +315,28 @@ def inject_localstorage_from_state(context, state_path=STORAGE_STATE_FILE):
 def try_playwright_download(page, selectors=None, timeout=12000):
     selectors = selectors or [
         "button:has-text('Download')",
+        "button:has-text('Download now')",
+        "button:has-text('Free download')",
         "[data-cy='download']",
+        "[data-testid*='download']",
         ".download-button",
         "a[href*='download']",
-        "a:has-text('Download')"
+        "a:has-text('Download')",
+        "a:has-text('Download now')"
     ]
     for sel in selectors:
         try:
             el = page.locator(sel).first
             if el.is_visible(timeout=3000):
                 logging.info("Attempting Playwright download for selector %s", sel)
+                try:
+                    href = el.get_attribute("href")
+                    if href and href.startswith("http"):
+                        logging.info("Found direct href download URL: %s", href)
+                        return href
+                except Exception:
+                    pass
+
                 try:
                     with page.expect_download(timeout=timeout) as dd:
                         el.click()
@@ -372,11 +384,22 @@ def try_playwright_download(page, selectors=None, timeout=12000):
 
 def _is_candidate_response(response):
     url = response.url.lower()
-    if any(x in url for x in ("/download", "/get-file", "/get-download", "/export", ".s3.", "presigned", "signed-url", "download-url")):
+    if any(x in url for x in (
+        "/download", "/get-file", "/get-download", "/export",
+        ".s3.", "presigned", "signed-url", "download-url",
+        "amazonaws.com", "cdn.", "storage", ".zip", ".psd", ".ai", ".jpg", ".png"
+    )):
         return True
     try:
         ct = (response.headers.get("content-type") or "").lower()
         if "application/json" in ct:
+            return True
+        if any(x in ct for x in (
+            "application/octet-stream",
+            "application/zip",
+            "image/",
+            "application/x-photoshop"
+        )):
             return True
     except Exception:
         pass
@@ -402,7 +425,7 @@ def capture_signed_download_url_and_fetch(page, click_action, wait_timeout=15000
         if "application/json" in ct:
             j = resp.json()
             resp_text = json.dumps(j)[:2000]
-            for k in ("url", "downloadUrl", "signedUrl", "presigned_url", "fileUrl"):
+            for k in ("url", "downloadUrl", "signedUrl", "presigned_url", "fileUrl", "file_url", "link"):
                 v = j.get(k)
                 if isinstance(v, str) and v.startswith("http"):
                     signed = v
@@ -412,7 +435,7 @@ def capture_signed_download_url_and_fetch(page, click_action, wait_timeout=15000
                 if m:
                     signed = m.group(0)
         else:
-            if any(x in resp.url.lower() for x in (".s3.", "amazonaws.com", "cdn.", "content.")):
+            if any(x in resp.url.lower() for x in (".s3.", "amazonaws.com", "cdn.", "content.", ".zip", ".psd", ".ai", ".jpg", ".png")):
                 signed = resp.url
     except Exception:
         logging.exception("Failed to parse response JSON")
@@ -467,21 +490,45 @@ def capture_signed_download_url_and_fetch(page, click_action, wait_timeout=15000
         logging.exception("Failed to fetch signed URL (server-side fallback)")
         return None
 
+def find_download_url_in_html(page):
+    try:
+        html = page.content()
+        patterns = [
+            r'https?://[^\s"\']+amazonaws[^\s"\']+',
+            r'https?://[^\s"\']+cdn[^\s"\']+',
+            r'https?://[^\s"\']+download[^\s"\']+',
+            r'https?://[^\s"\']+\.zip[^\s"\']*',
+            r'https?://[^\s"\']+\.psd[^\s"\']*',
+            r'https?://[^\s"\']+\.ai[^\s"\']*',
+            r'https?://[^\s"\']+\.jpg[^\s"\']*',
+            r'https?://[^\s"\']+\.png[^\s"\']*',
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, html, re.IGNORECASE)
+            if m:
+                logging.info("Found download-like URL in HTML: %s", m.group(0))
+                return m.group(0)
+    except Exception:
+        logging.exception("Failed scanning HTML for download URL")
+    return None
+
 # -------------------------
 # Core: handle Freepik/Magnific link (main flow)
 # -------------------------
 def handle_freepik_download(file_url):
     """
     Download file from Freepik/Magnific using Playwright
-    
+
     Args:
     - file_url: URL to download
-    
+
     Returns:
     - download_url: Direct download link or file path, or None if failed
     """
-    
+
     try:
+        logging.info("Starting handle_freepik_download for URL: %s", file_url)
+
         with sync_playwright() as p:
             ua = read_user_agent_from_files()
             browser = p.chromium.launch(
@@ -520,9 +567,43 @@ def handle_freepik_download(file_url):
 
             page = context.new_page()
             page.set_default_timeout(30000)
+
+            logging.info("Navigating to file URL")
             page.goto(file_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(1500)
             _click_accept_cookie_banner(page)
+
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+
+            try:
+                logging.info("Current URL after navigation: %s", page.url)
+                logging.info("Page title: %s", page.title())
+            except Exception:
+                pass
+
+            # Try direct hrefs first
+            anchor_selectors = [
+                "a[href*='download']",
+                "a[href*='.zip']",
+                "a[href*='.psd']",
+                "a[href*='.ai']",
+                "a[href*='amazonaws']",
+                "a[href*='cdn']",
+            ]
+            for sel in anchor_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if loc.is_visible(timeout=1500):
+                        href = loc.get_attribute("href")
+                        if href and href.startswith("http"):
+                            logging.info("Found direct anchor href: %s", href)
+                            browser.close()
+                            return href
+                except Exception:
+                    continue
 
             # Try playwright download first
             download_result = try_playwright_download(page)
@@ -534,10 +615,14 @@ def handle_freepik_download(file_url):
             # Try XHR capture for signed URLs
             download_selectors = [
                 "button:has-text('Download')",
+                "button:has-text('Download now')",
+                "button:has-text('Free download')",
                 "[data-cy='download']",
+                "[data-testid*='download']",
                 ".download-button",
                 "a[href*='download']",
-                "a:has-text('Download')"
+                "a:has-text('Download')",
+                "a:has-text('Download now')"
             ]
             for sel in download_selectors:
                 try:
@@ -553,10 +638,18 @@ def handle_freepik_download(file_url):
                 except Exception:
                     continue
 
+            # Final HTML scan fallback
+            html_download = find_download_url_in_html(page)
+            if html_download:
+                logging.info("✅ Found fallback HTML download URL: %s", html_download)
+                browser.close()
+                return html_download
+
             logging.error("❌ Could not find download URL")
             shot = f"no_download_{int(time.time())}.png"
             try:
                 page.screenshot(path=shot, full_page=True)
+                logging.info("Saved failure screenshot: %s", shot)
             except Exception:
                 pass
             browser.close()
