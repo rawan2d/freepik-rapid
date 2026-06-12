@@ -4,6 +4,8 @@ from typing import Optional
 import logging
 from datetime import datetime, timezone
 from starlette.concurrency import run_in_threadpool
+import asyncio
+import time
 
 app = FastAPI(
     title="Freepik Downloader API",
@@ -22,6 +24,25 @@ class DownloadResponse(BaseModel):
     message: str
     download_url: Optional[str] = None
 
+# Global slow mode settings
+download_lock = asyncio.Lock()
+last_download_time = 0
+SLOW_MODE_SECONDS = 15
+
+async def wait_for_slow_mode():
+    global last_download_time
+
+    async with download_lock:
+        now = time.time()
+        elapsed = now - last_download_time
+
+        if elapsed < SLOW_MODE_SECONDS:
+            wait_time = SLOW_MODE_SECONDS - elapsed
+            logger.info(f"Slow mode active. Waiting {wait_time:.2f} seconds before next download.")
+            await asyncio.sleep(wait_time)
+
+        last_download_time = time.time()
+
 @app.get("/")
 async def root():
     return {
@@ -36,6 +57,8 @@ async def api_download(url: str):
     logger.info(f"API download request: {url}")
 
     try:
+        await wait_for_slow_mode()
+
         from main import handle_freepik_download
         download_url = await run_in_threadpool(handle_freepik_download, url)
 
@@ -65,6 +88,8 @@ async def download_freepik(request: DownloadRequest):
     logger.info(f"Download request: {request.url}")
 
     try:
+        await wait_for_slow_mode()
+
         from main import handle_freepik_download
         download_url = await run_in_threadpool(handle_freepik_download, request.url)
 
