@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import Optional
 import logging
 from datetime import datetime, timezone
+from starlette.concurrency import run_in_threadpool
 
 app = FastAPI(
     title="Freepik Downloader API",
@@ -10,10 +12,15 @@ app = FastAPI(
 )
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("api")
 
 class DownloadRequest(BaseModel):
     url: str
+
+class DownloadResponse(BaseModel):
+    status: str
+    message: str
+    download_url: Optional[str] = None
 
 @app.get("/")
 async def root():
@@ -30,7 +37,7 @@ async def api_download(url: str):
 
     try:
         from main import handle_freepik_download
-        download_url = handle_freepik_download(url)
+        download_url = await run_in_threadpool(handle_freepik_download, url)
 
         if not download_url:
             return {
@@ -59,7 +66,7 @@ async def download_freepik(request: DownloadRequest):
 
     try:
         from main import handle_freepik_download
-        download_url = handle_freepik_download(request.url)
+        download_url = await run_in_threadpool(handle_freepik_download, request.url)
 
         if not download_url:
             return {
@@ -88,3 +95,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
