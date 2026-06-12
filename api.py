@@ -52,7 +52,7 @@ async def root():
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-@app.post("/download", response_model=DownloadResponse)
+@app.post("/download")
 async def download_freepik(
     request: DownloadRequest,
     api_key: str = Depends(verify_api_key)
@@ -77,23 +77,25 @@ async def download_freepik(
         download_url = handle_freepik_download(request.url)
         
         if not download_url:
-            return DownloadResponse(
-                status="error",
-                message="❌ Failed to get download URL"
-            )
+            return {
+                "status": "error",
+                "message": "❌ Failed to get download URL",
+                "download_url": None
+            }
         
-        return DownloadResponse(
-            status="success",
-            message="✅ Download link generated successfully",
-            download_url=download_url
-        )
+        return {
+            "status": "success",
+            "message": "✅ Download link generated successfully",
+            "download_url": download_url
+        }
     
     except Exception as e:
         logger.exception(f"Download error: {str(e)}")
-        return DownloadResponse(
-            status="error",
-            message=f"❌ Download failed: {str(e)}"
-        )
+        return {
+            "status": "error",
+            "message": f"❌ Download failed: {str(e)}",
+            "download_url": None
+        }
 
 @app.get("/health")
 async def health_check():
